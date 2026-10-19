@@ -13,7 +13,9 @@ pub mod custom;
 pub mod eval;
 pub mod functions;
 pub mod parser;
+pub mod validation;
 pub mod value;
+pub mod what_if;
 
 pub use custom::CustomFunctions;
 pub use eval::{Engine, Origin};

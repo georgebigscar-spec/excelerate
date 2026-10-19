@@ -9,11 +9,13 @@
 
 mod anchor;
 mod chart;
+mod data;
 mod extension;
 mod filter;
 mod range;
 mod series;
 
+pub use data::{Deduplicated, SplitBy, remove_duplicates, text_to_columns};
 pub use filter::filter_table;
 pub use range::{
     SortBy, SortKey, SortOptions, copy_range, fill, insert_cells, insert_cells_with, move_range,

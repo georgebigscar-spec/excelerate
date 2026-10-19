@@ -198,3 +198,69 @@ range covering a million cells - each has a defined answer (`#REF!` for a
 cycle, `#VALUE!` for an oversized range) rather than a stack overflow. A chain
 of formulas reading formulas has no limit of its own: past a hundred links the
 engine sets the deepest cell aside, computes it from the top and carries on.
+
+## Goal Seek
+
+`what_if::goal_seek` finds the value of an input cell that makes a formula
+compute a target: Excel's What-If Analysis - Goal Seek. It stops after the
+workbook's Maximum Iterations or within its Maximum Change (100 and 0.001
+unless the file says otherwise), leaves the best value in the input cell and
+recomputes what reads it.
+
+```rust
+use excelerate::at;
+use excelerate::formula::what_if::goal_seek;
+use excelerate::model::{CellValue, Spreadsheet, Worksheet};
+
+let mut book = Spreadsheet::empty();
+let mut sheet = Worksheet::new("Loan")?;
+sheet.set(at!("A1"), 0.01);                        // monthly rate
+sheet.set(at!("B1"), CellValue::formula("PMT(A1,36,-10000)"));
+book.add_sheet(sheet)?;
+
+// Which rate makes the payment 300?
+let found = goal_seek(&mut book, (0, at!("B1")), 300.0, (0, at!("A1")))?;
+assert!(found.converged);
+assert!((found.value - 0.0042).abs() < 0.0001);
+# Ok::<(), excelerate::Error>(())
+```
+
+## Checking data validation
+
+A sheet's `data_validations` are kept as the file wrote them;
+`formula::validation` applies them. `check` says whether a value would be
+accepted in a cell and hands back the rule it breaks, with the error title
+and message Excel would show; `invalid_cells` is Circle Invalid Data;
+`list_items` gives the choices of a drop-down list.
+
+```rust
+use excelerate::at;
+use excelerate::formula::validation::{check, invalid_cells};
+use excelerate::model::{
+    CellValue, DataValidation, Spreadsheet, ValidationOperator, ValidationType, Worksheet,
+};
+use excelerate::Range;
+
+let mut book = Spreadsheet::empty();
+let mut sheet = Worksheet::new("Form")?;
+sheet.set(at!("A2"), 150.0);
+sheet.data_validations.push(DataValidation {
+    sqref: vec![Range::parse("A1:A10")?],
+    kind: ValidationType::Whole,
+    operator: ValidationOperator::Between,
+    formula1: "0".into(),
+    formula2: "120".into(),
+    allow_blank: true,
+    ..DataValidation::default()
+});
+book.add_sheet(sheet)?;
+
+assert!(check(&book, 0, at!("A1"), &CellValue::Number(42.0)).is_none());
+assert!(check(&book, 0, at!("A1"), &CellValue::Number(4.5)).is_some());
+assert_eq!(invalid_cells(&book, 0), vec![at!("A2")]);
+# Ok::<(), excelerate::Error>(())
+```
+
+A rule's formulas are written for the first cell of its range and move with
+the cell checked, as in Excel, so `$B$1` is a fixed bound and `B1` the cell
+beside each one.

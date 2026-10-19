@@ -916,3 +916,82 @@ test("formatted text", () => {
   }
   assert.throws(() => book.setRichText(0, "A1", [{ font: {} }]), /text/);
 });
+
+test("remove duplicates and text to columns", () => {
+  const book = new Book();
+  book.setRange(0, "A1", [["Ann;Oslo"], ["Bob;Rome"], ["ann;OSLO"], ["Cid;Rome;3"]]);
+  assert.strictEqual(book.textToColumns(0, "A1:A4", { delimiters: ";" }), 3);
+  assert.deepStrictEqual(book.getRange(0, "A4:C4"), [["Cid", "Rome", 3]]);
+
+  const done = book.removeDuplicates(0, "A1:B4", { columns: [1, 2] });
+  assert.deepStrictEqual(done, { removed: 1, remaining: 3 });
+  assert.deepStrictEqual(book.getRange(0, "A1:A4").flat(), ["Ann", "Bob", "Cid", null]);
+
+  book.setRange(0, "E1", [["2024 Q1  15"]]);
+  book.textToColumns(0, "E1", { widths: [4, 7], destination: "F1" });
+  assert.deepStrictEqual(book.getRange(0, "F1:H1"), [[2024, "Q1", 15]]);
+
+  assert.throws(() => book.removeDuplicates(0, "A1:B4", { columns: [0] }), /counts from 1/);
+  assert.throws(() => book.textToColumns(0, "A1", { delimiters: "" }), /delimiters or widths/);
+});
+
+test("goal seek", () => {
+  const { Workbook } = require("excelerate");
+  const book = new Book();
+  book.setRange(0, "A1", [[0.01, 36, 10000, "=PMT(A1,B1,-C1)"]]);
+  const found = book.goalSeek(0, "D1", 300, "A1", { tolerance: 1e-7 });
+  assert.strictEqual(found.converged, true);
+  assert.ok(Math.abs(found.result - 300) < 1e-6, JSON.stringify(found));
+  assert.strictEqual(book.get(0, "A1"), found.value);
+  assert.ok(Math.abs(book.get(0, "D1") - 300) < 1e-6);
+  assert.throws(() => book.goalSeek(0, "A1", 1, "B1"), /must contain a formula/);
+
+  // Through the Sheet object, the sheet comes first implicitly.
+  const sheet = new Workbook().sheet(0);
+  sheet.set("A1", 1).set("B1", "=A1*A1");
+  assert.ok(Math.abs(sheet.goalSeek("B1", 9, "A1").value - 3) < 1e-3);
+});
+
+test("data validation rules, checked", () => {
+  const book = new Book();
+  book.setRange(0, "E1", [["Red"], ["Green"]]);
+  book.addDataValidation(0, {
+    sqref: "A1:A10",
+    type: "whole",
+    operator: "between",
+    formula1: "1",
+    formula2: "10",
+    errorTitle: "Out of range",
+    error: "From 1 to 10",
+  });
+  book.addDataValidation(0, { sqref: "B1:B10", type: "list", formula1: "$E$1:$E$2" });
+  book.addDataValidation(0, { sqref: "C1:C10", type: "list", formula1: "\"Yes,No\"" });
+
+  assert.strictEqual(book.checkValidation(0, "A3", 7), null);
+  const problem = book.checkValidation(0, "A3", 11);
+  assert.deepStrictEqual(problem, {
+    style: "stop",
+    title: "Out of range",
+    message: "From 1 to 10",
+    sqref: ["A1:A10"],
+  });
+  assert.notStrictEqual(book.checkValidation(0, "A3", 2.5), null);
+  assert.strictEqual(book.checkValidation(0, "B2", "green"), null);
+  assert.deepStrictEqual(book.validationList(0, "B5"), ["Red", "Green"]);
+  assert.deepStrictEqual(book.validationList(0, "C1"), ["Yes", "No"]);
+  assert.deepStrictEqual(book.validationList(0, "D1"), []);
+
+  book.setRange(0, "A1", [[5], [50], [3]]);
+  assert.deepStrictEqual(book.invalidCells(0), ["A2"]);
+
+  // The rule survives a round trip as Excel would read it.
+  const back = Book.read(book.toXlsx());
+  assert.deepStrictEqual(back.invalidCells(0), ["A2"]);
+  assert.strictEqual(back.dataValidations(0).length, 3);
+
+  assert.throws(() => book.addDataValidation(0, { sqref: "A1", type: "nope" }), /type is/);
+  assert.throws(
+    () => book.addDataValidation(0, { sqref: "A1", type: "whole", operator: "bigger" }),
+    /not a validation operator/,
+  );
+});

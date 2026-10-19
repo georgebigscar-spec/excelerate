@@ -256,6 +256,31 @@ export interface RangeStyles {
   styles: CellStyle[];
   grid: number[][];
 }
+/** Limits for `goalSeek`; the workbook's iteration settings when left out. */
+export interface GoalSeekOptions {
+  maxIterations?: number;
+  tolerance?: number;
+}
+/** How `goalSeek` ended. */
+export interface GoalSeekResult {
+  /** The value left in the changing cell: the best one tried. */
+  value: number;
+  /** What the set cell computes with it; `null` when that is not a number. */
+  result: number | null;
+  /** How many times the set cell was computed. */
+  iterations: number;
+  /** Whether `result` is within the tolerance of the target. */
+  converged: boolean;
+}
+/** The rule a value breaks, as `checkValidation` reports it. */
+export interface ValidationProblem {
+  /** How Excel reports it: `stop` refuses the entry, the others only warn. */
+  style: "stop" | "warning" | "information";
+  title: string;
+  /** The rule's own message; empty when it has none. */
+  message: string;
+  sqref: string[];
+}
 "#;
 
 /// The shapes only the writing build takes, so a read-only package does not
@@ -370,5 +395,56 @@ export type TableFilter =
 export interface ChartFormatPatch {
   format?: DrawingFormatPatch | null;
   plotFormat?: DrawingFormatPatch | null;
+}
+/** What `removeDuplicates` did. */
+export interface DuplicatesRemoved {
+  /** Rows dropped as repeats of a row above them. */
+  removed: number;
+  /** Data rows left, the header not counted. */
+  remaining: number;
+}
+/** How `removeDuplicates` compares rows. */
+export interface RemoveDuplicatesOptions {
+  /** 1-based sheet columns to compare; every column of the range when left out. */
+  columns?: number[];
+  /** The first row is a header: it stays and is not compared. */
+  header?: boolean;
+}
+/** How `textToColumns` cuts text: by `delimiters` or, when given, by `widths`. */
+export interface TextToColumnsOptions {
+  /** Delimiter characters, each one a delimiter: `";"`, `",\t"`. A tab when left out. */
+  delimiters?: string;
+  /** Character positions to cut before, for fixed width. */
+  widths?: number[];
+  /** A run of delimiters counts as one. */
+  mergeConsecutive?: boolean;
+  /** The quote inside which delimiters are text; `"` when left out, `null` for none. */
+  qualifier?: string | null;
+  /** The first cell written; the range's own first cell when left out. */
+  destination?: string;
+}
+/** A rule for `addDataValidation`. Formulas are written for the first cell of `sqref`. */
+export interface NewDataValidation {
+  /** The cells, space-separated: `"B2:B100"`, `"B2:B9 D2:D9"`. */
+  sqref: string;
+  type: "whole" | "decimal" | "list" | "date" | "time" | "textLength" | "custom";
+  operator?:
+    | "between" | "notBetween" | "equal" | "notEqual"
+    | "greaterThan" | "lessThan" | "greaterThanOrEqual" | "lessThanOrEqual";
+  /** First bound, the list (`"\"Yes,No\""` or `"$E$1:$E$5"`) or the custom formula. */
+  formula1?: string;
+  /** Second bound, for `between` and `notBetween`. */
+  formula2?: string;
+  /** Empty cells pass. On when left out. */
+  allowBlank?: boolean;
+  /** The in-cell arrow of a list. On when left out. */
+  showDropDown?: boolean;
+  showInputMessage?: boolean;
+  showErrorMessage?: boolean;
+  errorStyle?: "stop" | "warning" | "information";
+  errorTitle?: string;
+  error?: string;
+  promptTitle?: string;
+  prompt?: string;
 }
 "#;

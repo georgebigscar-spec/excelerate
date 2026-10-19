@@ -6,7 +6,7 @@
 use super::convert::{array, col_at, row_at};
 use super::{Book, js};
 use crate::coordinate::{CellRef, Col, Range, Row};
-use crate::edit::{Axis, CopyOrigin, SortBy, SortKey, SortOptions};
+use crate::edit::{Axis, CopyOrigin, SortBy, SortKey, SortOptions, SplitBy};
 use wasm_bindgen::prelude::*;
 
 #[wasm_bindgen]
@@ -364,6 +364,199 @@ impl Book {
     pub fn remove_sheet(&mut self, sheet: usize) -> Result<(), JsError> {
         let done = crate::edit::remove_sheet(&mut self.workbook, sheet);
         self.edited(done)
+    }
+    /// Removes the rows of a range that repeat a row above them, as Excel's
+    /// Remove Duplicates does: cells are compared by the text they show,
+    /// without regard to case. `options.columns` are the 1-based sheet
+    /// columns compared (all of the range when left out), and
+    /// `options.header` keeps the first row out of it. Returns
+    /// `{ removed, remaining }`.
+    ///
+    /// ```js
+    /// book.removeDuplicates(0, "A1:C500", { columns: [1, 3], header: true });
+    /// ```
+    #[wasm_bindgen(js_name = removeDuplicates, unchecked_return_type = "DuplicatesRemoved")]
+    pub fn remove_duplicates(
+        &mut self,
+        sheet: usize,
+        range: &str,
+        #[wasm_bindgen(unchecked_optional_param_type = "RemoveDuplicatesOptions")]
+        options: &JsValue,
+    ) -> Result<JsValue, JsError> {
+        let area = Range::parse(range).map_err(js)?;
+        let header = super::convert::field(options, "header").is_some_and(|v| v.is_truthy());
+        let columns = match super::convert::field(options, "columns") {
+            Some(columns) => array(&columns, "columns")?
+                .iter()
+                .map(|c| {
+                    c.as_f64()
+                        .filter(|n| n.fract() == 0.0 && *n >= 1.0 && *n <= f64::from(u32::MAX))
+                        .ok_or_else(|| JsError::new("a column counts from 1"))
+                        .and_then(|n| {
+                            #[expect(
+                                clippy::cast_possible_truncation,
+                                clippy::cast_sign_loss,
+                                reason = "checked whole and in range just above"
+                            )]
+                            col_at(n as u32)
+                        })
+                })
+                .collect::<Result<Vec<_>, _>>()?,
+            None => Vec::new(),
+        };
+        let done =
+            crate::edit::remove_duplicates(&mut self.workbook, sheet, area, &columns, header)
+                .map_err(js)?;
+        self.forget_dependencies();
+        Ok(super::convert::object(&[
+            ("removed", super::convert::count(done.removed)),
+            ("remaining", super::convert::count(done.remaining)),
+        ]))
+    }
+
+    /// Splits the text of each cell in the first column of `range` across
+    /// the columns to its right, as Excel's Text to Columns does. Pieces that
+    /// read as numbers, booleans or errors become them. Returns how many
+    /// columns the widest row took.
+    ///
+    /// `options.delimiters` is a string of delimiter characters (`";"`,
+    /// `",\t"`), or `options.widths` the character positions to cut before
+    /// for fixed width; `mergeConsecutive` treats a run of delimiters as one,
+    /// `qualifier` is the quote (`"` unless given; `null` for none), and
+    /// `destination` is the first cell written (the range's own when left
+    /// out).
+    ///
+    /// ```js
+    /// book.textToColumns(0, "A2:A100", { delimiters: ";" });
+    /// book.textToColumns(0, "A2:A100", { widths: [4, 10], destination: "C2" });
+    /// ```
+    #[wasm_bindgen(js_name = textToColumns)]
+    pub fn text_to_columns(
+        &mut self,
+        sheet: usize,
+        range: &str,
+        #[wasm_bindgen(unchecked_param_type = "TextToColumnsOptions")] options: &JsValue,
+    ) -> Result<u32, JsError> {
+        use super::convert::field;
+        let area = Range::parse(range).map_err(js)?;
+        let destination = match field(options, "destination").and_then(|v| v.as_string()) {
+            Some(address) => CellRef::parse(&address).map_err(js)?,
+            None => area.start,
+        };
+        let split = if let Some(widths) = field(options, "widths") {
+            let widths = array(&widths, "widths")?
+                .iter()
+                .map(|w| {
+                    w.as_f64()
+                        .filter(|n| n.fract() == 0.0 && *n >= 0.0 && *n <= f64::from(u32::MAX))
+                        .ok_or_else(|| JsError::new("a width is a whole number of characters"))
+                        .map(|n| {
+                            #[expect(
+                                clippy::cast_possible_truncation,
+                                clippy::cast_sign_loss,
+                                reason = "checked whole and in range just above"
+                            )]
+                            let n = n as usize;
+                            n
+                        })
+                })
+                .collect::<Result<Vec<_>, _>>()?;
+            SplitBy::FixedWidth(widths)
+        } else {
+            let delimiters: Vec<char> = field(options, "delimiters")
+                .and_then(|v| v.as_string())
+                .map_or_else(|| vec!['\t'], |d| d.chars().collect());
+            if delimiters.is_empty() {
+                return Err(JsError::new("textToColumns needs delimiters or widths"));
+            }
+            let qualifier = match field(options, "qualifier") {
+                None => Some('"'),
+                Some(q) if q.is_null() => None,
+                Some(q) => Some(super::convert::one_char(&q)?),
+            };
+            SplitBy::Delimited {
+                delimiters,
+                merge_consecutive: field(options, "mergeConsecutive")
+                    .is_some_and(|v| v.is_truthy()),
+                qualifier,
+            }
+        };
+        let width =
+            crate::edit::text_to_columns(&mut self.workbook, sheet, area, destination, &split)
+                .map_err(js)?;
+        self.forget_dependencies();
+        Ok(width)
+    }
+
+    /// Adds a data validation rule to a sheet, as Data - Data Validation
+    /// does: `type` is `"whole"`, `"decimal"`, `"list"`, `"date"`, `"time"`,
+    /// `"textLength"` or `"custom"`, `operator` one of `"between"` (the
+    /// default), `"notBetween"`, `"equal"`, `"notEqual"`, `"greaterThan"`,
+    /// `"lessThan"`, `"greaterThanOrEqual"`, `"lessThanOrEqual"`. Formulas are
+    /// written for the first cell of `sqref`; a list is `"\"Yes,No\""` or a
+    /// range such as `"$E$1:$E$5"`.
+    ///
+    /// ```js
+    /// book.addDataValidation(0, { sqref: "B2:B100", type: "list", formula1: "\"Yes,No\"" });
+    /// ```
+    #[wasm_bindgen(js_name = addDataValidation)]
+    pub fn add_data_validation(
+        &mut self,
+        sheet: usize,
+        #[wasm_bindgen(unchecked_param_type = "NewDataValidation")] rule: &JsValue,
+    ) -> Result<(), JsError> {
+        use super::convert::field;
+        use crate::model::{
+            DataValidation, ValidationErrorStyle, ValidationOperator, ValidationType,
+        };
+        let text = |name: &str| field(rule, name).and_then(|v| v.as_string());
+        let flag = |name: &str, default: bool| field(rule, name).map_or(default, |v| v.is_truthy());
+        let sqref = text("sqref")
+            .ok_or_else(|| JsError::new("a rule needs its sqref, such as \"A1:A10\""))?
+            .split_whitespace()
+            .map(Range::parse)
+            .collect::<crate::error::Result<Vec<_>>>()
+            .map_err(js)?;
+        let kind = ValidationType::parse(&text("type").unwrap_or_default());
+        if kind == ValidationType::None {
+            return Err(JsError::new(
+                "type is whole, decimal, list, date, time, textLength or custom",
+            ));
+        }
+        let formula1 = text("formula1").unwrap_or_default();
+        let formula1 = formula1.strip_prefix('=').unwrap_or(&formula1).to_owned();
+        let formula2 = text("formula2").unwrap_or_default();
+        let formula2 = formula2.strip_prefix('=').unwrap_or(&formula2).to_owned();
+        let operator = match text("operator") {
+            None => ValidationOperator::Between,
+            Some(name) => {
+                let operator = ValidationOperator::parse(&name);
+                if operator.as_str() != name {
+                    return Err(JsError::new(&format!(
+                        "{name:?} is not a validation operator"
+                    )));
+                }
+                operator
+            }
+        };
+        let validation = DataValidation {
+            sqref,
+            kind,
+            operator,
+            formula1,
+            formula2,
+            allow_blank: flag("allowBlank", true),
+            hide_drop_down: !flag("showDropDown", true),
+            show_input_message: flag("showInputMessage", true),
+            show_error_message: flag("showErrorMessage", true),
+            error_title: text("errorTitle").unwrap_or_default(),
+            error: text("error").unwrap_or_default(),
+            prompt_title: text("promptTitle").unwrap_or_default(),
+            prompt: text("prompt").unwrap_or_default(),
+            error_style: ValidationErrorStyle::parse(&text("errorStyle").unwrap_or_default()),
+        };
+        self.sheet_mut(sheet)?.data_validations.push(validation);
+        Ok(())
     }
 }
 
