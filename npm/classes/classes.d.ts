@@ -107,30 +107,32 @@ export declare class SheetRange {
  * `sheet.setColumnWidth(2, 14).setRowHidden(5, true).getRange("A1:C3")`.
  */
 type SheetActionName =
-  | "clear" | "clearAt" | "copyRange" | "fillDown" | "fillRight" | "fillSeries"
-  | "freezePanes" | "insertCells" | "insertColumns" | "insertColumnsMany"
-  | "insertRows" | "insertRowsMany" | "merge" | "moveRange" | "protectSheet"
-  | "removeCells" | "removeColumns" | "removeColumnsMany" | "removeRows"
-  | "removeRowsMany" | "set" | "setAt" | "setCellStyle" | "setCellStyleAt"
-  | "setChartFormat" | "setColumnHidden" | "setColumnWidth" | "setComment"
-  | "setHyperlink" | "setRange" | "setRangeAt" | "setRangeStyle"
-  | "setRangeStyles" | "setRangeStylesAt" | "setRichText" | "setRichTextAt"
-  | "setRowHeight" | "setRowHidden" | "setShapeFormat" | "setSheetVisibility"
-  | "setShowGridLines" | "setZoom" | "sortRange" | "unprotectSheet";
+  | "addDataValidation" | "clear" | "clearAt" | "copyRange" | "fillDown"
+  | "fillRight" | "fillSeries" | "freezePanes" | "insertCells" | "insertColumns"
+  | "insertColumnsMany" | "insertRows" | "insertRowsMany" | "merge"
+  | "moveRange" | "protectSheet" | "removeCells" | "removeColumns"
+  | "removeColumnsMany" | "removeRows" | "removeRowsMany" | "set" | "setAt"
+  | "setCellStyle" | "setCellStyleAt" | "setChartFormat" | "setColumnHidden"
+  | "setColumnWidth" | "setComment" | "setHyperlink" | "setRange" | "setRangeAt"
+  | "setRangeStyle" | "setRangeStyles" | "setRangeStylesAt" | "setRichText"
+  | "setRichTextAt" | "setRowHeight" | "setRowHidden" | "setShapeFormat"
+  | "setSheetVisibility" | "setShowGridLines" | "setZoom" | "sortRange"
+  | "unprotectSheet";
 type SheetQueryName =
   | "arrayFormulas" | "autoFilter" | "cellBold" | "cellBoldAt" | "cellCount"
   | "cellIndent" | "cellIndentAt" | "cellStyle" | "cellStyleAt" | "charts"
-  | "columnLevel" | "columnWidth" | "comments" | "conditionalFormats"
-  | "dataValidations" | "evaluate" | "get" | "getAt" | "getFormatted"
-  | "getFormattedAt" | "getFormula" | "getFormulaAt" | "getRange" | "getRangeAt"
-  | "getRangeStyles" | "getRangeStylesAt" | "getRichText" | "getRichTextAt"
-  | "getRowAt" | "hyperlinks" | "imageData" | "images" | "mergedRanges"
-  | "mergedRangesAt" | "pivotTables" | "recalculateCell" | "recalculateCellAt"
-  | "recalculateFrom" | "recalculateFromAt" | "recalculateFromMany"
-  | "removeComment" | "removeHyperlink" | "removeTable" | "rowHeight"
+  | "checkValidation" | "columnLevel" | "columnWidth" | "comments"
+  | "conditionalFormats" | "dataValidations" | "evaluate" | "get" | "getAt"
+  | "getFormatted" | "getFormattedAt" | "getFormula" | "getFormulaAt"
+  | "getRange" | "getRangeAt" | "getRangeStyles" | "getRangeStylesAt"
+  | "getRichText" | "getRichTextAt" | "getRowAt" | "goalSeek" | "hyperlinks"
+  | "imageData" | "images" | "invalidCells" | "mergedRanges" | "mergedRangesAt"
+  | "pivotTables" | "recalculateCell" | "recalculateCellAt" | "recalculateFrom"
+  | "recalculateFromAt" | "recalculateFromMany" | "removeComment"
+  | "removeDuplicates" | "removeHyperlink" | "removeTable" | "rowHeight"
   | "rowHidden" | "rowLevel" | "shapes" | "sheetProtection" | "sheetView"
-  | "sheetVisibility" | "toCsv" | "toHtml" | "unmerge" | "usedRange"
-  | "usedRangeHint" | "verifySheetPassword";
+  | "sheetVisibility" | "textToColumns" | "toCsv" | "toHtml" | "unmerge"
+  | "usedRange" | "usedRangeHint" | "validationList" | "verifySheetPassword";
 /** Every `Book` method without a sheet is a `Workbook` method, chaining the same way. */
 type BookActionName =
   | "moveSheet" | "protectWorkbook" | "registerFunction" | "setDefinedName"

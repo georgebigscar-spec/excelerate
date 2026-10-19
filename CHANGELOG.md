@@ -1,5 +1,46 @@
 # Changelog
 
+## Unreleased
+
+### Changed
+
+- `zip` is built with Deflate alone (`default-features = false`,
+  `deflate-flate2-zlib-rs`). Its defaults pulled in zstd, bzip2, lzma, ppmd,
+  deflate64, zopfli and zip's own encryption - 28 crates, one of them C
+  (`zstd-sys`), so a WebAssembly build needed clang. Every format here is
+  Stored or Deflate, and Deflate stays on zlib-rs, so nothing reads or
+  writes differently. A package written with one of the dropped methods
+  now fails to open with `Error::Xlsx` and the like instead of opening.
+
+### Added
+
+- Data tools:
+  - `edit::remove_duplicates`: Excel's Remove Duplicates. Rows of a range are
+    compared by the text their cells show, without regard to case, on all
+    columns or the ones given; the first is kept, the rest close up inside
+    the range, and moved formulas are rewritten as a sort rewrites them.
+    Returns `Deduplicated { removed, remaining }`.
+  - `edit::text_to_columns` with `SplitBy`: Text to Columns, by delimiters
+    (with a text qualifier and consecutive delimiters as one) or by fixed
+    widths. Pieces are typed as CSV fields are; a split that would run past
+    the last column writes nothing and is `Error::WouldPushOffSheet`.
+  - `formula::what_if::goal_seek` and `goal_seek_with`: Goal Seek, secant
+    steps with bisection inside a sign change, stepping back out of inputs
+    where the model errors. Limits come from the workbook's `iterateCount`
+    and `iterateDelta` (`SeekLimits::of`), or are given. The best value is
+    left in the input cell and what reads it is recomputed. The new
+    `Error::GoalSeek` reports a set cell without a formula or an input cell
+    with one.
+  - `formula::validation`: `check` a value against the data validation rule
+    of a cell, `invalid_cells` of a sheet (Circle Invalid Data), `rule_at` and
+    `list_items` for drop-downs. Every rule type is applied, and a rule's
+    formulas move from the first cell of its range to the cell checked.
+- In JS: `removeDuplicates`, `textToColumns`, `goalSeek`, `checkValidation`,
+  `invalidCells` and `validationList` on `Book` and `Sheet`, with their option
+  and result types. `addDataValidation` adds a rule from JS, which could
+  only read them before; a type or operator it does not know is an error
+  rather than a silent default.
+
 ## 0.15.0
 
 ### Added

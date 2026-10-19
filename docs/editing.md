@@ -230,6 +230,38 @@ filled cells at the end of each line, and the series runs back from it - `1, 2`
 goes `0, -1`, a single `Кв3` goes `Кв2`, a single date steps back a day, a
 repeat keeps its phase.
 
+## Removing duplicates and splitting text
+
+`remove_duplicates` is Excel's Data - Remove Duplicates: rows are compared by
+the text their cells show, without regard to case, the first of each set is
+kept and the rows below close up inside the range. An empty column list
+compares every column of the range.
+
+```rust
+use excelerate::edit::{SplitBy, remove_duplicates, text_to_columns};
+use excelerate::{Range, at};
+# use excelerate::model::{Spreadsheet, Worksheet};
+# let mut book = Spreadsheet::empty();
+# let mut sheet = Worksheet::new("Data")?;
+# sheet.set(at!("A1"), "Name;Age");
+# sheet.set(at!("A2"), "Ann;41");
+# sheet.set(at!("A3"), "ann;41");
+# book.add_sheet(sheet)?;
+
+// "Ann;41" in A2 becomes "Ann" in A2 and the number 41 in B2.
+text_to_columns(&mut book, 0, Range::parse("A1:A3")?, at!("A1"), &SplitBy::delimiter(';'))?;
+
+// Row 3 repeats row 2; the first row is a header and stays.
+let done = remove_duplicates(&mut book, 0, Range::parse("A1:B3")?, &[], true)?;
+assert_eq!((done.removed, done.remaining), (1, 1));
+# Ok::<(), excelerate::Error>(())
+```
+
+`SplitBy::Delimited` takes several delimiters, a text qualifier and Excel's
+"treat consecutive delimiters as one"; `SplitBy::FixedWidth` cuts at
+character positions. Pieces become numbers, booleans and errors the way a
+CSV field does.
+
 ## Moving a sheet
 
 ```rust

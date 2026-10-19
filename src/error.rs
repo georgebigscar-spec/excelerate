@@ -97,6 +97,11 @@ pub enum Error {
     /// The `SpreadsheetML` 2003 document is malformed or not one at all.
     #[error("xml: {0}")]
     Xml2003(String),
+
+    /// Goal Seek was pointed at cells it cannot work with: a set cell with
+    /// no formula, or a changing cell that holds one.
+    #[error("goal seek: {0}")]
+    GoalSeek(String),
 }
 
 /// Result of a crate operation.

@@ -52,7 +52,8 @@ takes numbers, and `CellRef::parse` takes text that arrives at run time.
   and a read-only `@rosperitus/excelerate-reader` at a third of the size.
 - **No `unsafe`**, `clippy::pedantic` clean, and the deps are `zip`, `quick-xml`,
   `flate2`, `thiserror`, `regex` for the `REGEX*` functions, and `sha1`/`sha2`/
-  `getrandom` for password hashes - all but `regex` already come with `zip`.
+  `getrandom` for password hashes - all pure Rust, so a wasm build needs no C
+  toolchain.
 
 ## Use cases, step by step
 

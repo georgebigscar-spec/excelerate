@@ -54,6 +54,130 @@ impl Book {
         self.custom.names().map(str::to_owned).collect()
     }
 
+    /// Finds the value of `changing` that makes the formula in `set` compute
+    /// `target`, as Excel's Goal Seek does, both cells on `sheet`. The best
+    /// value found is left in `changing` and what reads it is recomputed.
+    /// `options.maxIterations` and `options.tolerance` default to the
+    /// workbook's own iteration settings (100 and 0.001 unless it says
+    /// otherwise). Returns `{ value, result, iterations, converged }`.
+    ///
+    /// ```js
+    /// const { value, converged } = book.goalSeek(0, "B4", 300, "B1");
+    /// ```
+    #[wasm_bindgen(js_name = goalSeek, unchecked_return_type = "GoalSeekResult")]
+    pub fn goal_seek(
+        &mut self,
+        sheet: usize,
+        set: &str,
+        target: f64,
+        changing: &str,
+        #[wasm_bindgen(unchecked_optional_param_type = "GoalSeekOptions")] options: &JsValue,
+    ) -> Result<JsValue, JsError> {
+        use super::convert::{field, object};
+        use crate::formula::what_if::{SeekLimits, goal_seek_with};
+        let set = CellRef::parse(set).map_err(js)?;
+        let changing = CellRef::parse(changing).map_err(js)?;
+        let mut limits = SeekLimits::of(&self.workbook);
+        if let Some(n) = field(options, "maxIterations").and_then(|v| v.as_f64()) {
+            if !(n.fract() == 0.0 && n >= 1.0 && n <= f64::from(u32::MAX)) {
+                return Err(JsError::new("maxIterations is a whole number from 1"));
+            }
+            #[expect(
+                clippy::cast_possible_truncation,
+                clippy::cast_sign_loss,
+                reason = "checked whole and in range just above"
+            )]
+            let n = n as u32;
+            limits.max_iterations = n;
+        }
+        if let Some(t) = field(options, "tolerance").and_then(|v| v.as_f64()) {
+            if !(t.is_finite() && t > 0.0) {
+                return Err(JsError::new("tolerance is a number above 0"));
+            }
+            limits.tolerance = t;
+        }
+        let functions = crate::progress::Options::new().with_functions(&self.custom);
+        let found = goal_seek_with(
+            &mut self.workbook,
+            (sheet, set),
+            target,
+            (sheet, changing),
+            limits,
+            &functions,
+        )
+        .map_err(js)?;
+        let number = |n: f64| {
+            if n.is_finite() {
+                JsValue::from_f64(n)
+            } else {
+                JsValue::NULL
+            }
+        };
+        Ok(object(&[
+            ("value", JsValue::from_f64(found.value)),
+            ("result", number(found.result)),
+            ("iterations", JsValue::from_f64(f64::from(found.iterations))),
+            ("converged", JsValue::from_bool(found.converged)),
+        ]))
+    }
+
+    /// Whether `value` would be accepted in a cell under its data validation
+    /// rule: `null` when it would (or there is no rule), otherwise what Excel
+    /// would report, `{ style, title, message, sqref }`.
+    ///
+    /// ```js
+    /// const problem = book.checkValidation(0, "B5", 150);
+    /// if (problem) alert(problem.message || "Not allowed");
+    /// ```
+    #[wasm_bindgen(js_name = checkValidation, unchecked_return_type = "ValidationProblem | null")]
+    pub fn check_validation(
+        &self,
+        sheet: usize,
+        address: &str,
+        #[wasm_bindgen(unchecked_param_type = "CellValue")] value: &JsValue,
+    ) -> Result<JsValue, JsError> {
+        use super::convert::{js_to_cell, object, ranges_to_js};
+        let at = CellRef::parse(address).map_err(js)?;
+        self.sheet_of(sheet)?;
+        let value = js_to_cell(value)?;
+        Ok(
+            match crate::formula::validation::check(&self.workbook, sheet, at, &value) {
+                None => JsValue::NULL,
+                Some(rule) => object(&[
+                    ("style", JsValue::from_str(rule.error_style.as_str())),
+                    ("title", JsValue::from_str(&rule.error_title)),
+                    ("message", JsValue::from_str(&rule.error)),
+                    ("sqref", ranges_to_js(&rule.sqref)),
+                ]),
+            },
+        )
+    }
+
+    /// The cells of a sheet whose values break their data validation rule,
+    /// as Excel's Circle Invalid Data finds them: `["B3", "B9"]`.
+    #[wasm_bindgen(js_name = invalidCells)]
+    pub fn invalid_cells(&self, sheet: usize) -> Result<Vec<String>, JsError> {
+        self.sheet_of(sheet)?;
+        Ok(
+            crate::formula::validation::invalid_cells(&self.workbook, sheet)
+                .into_iter()
+                .map(|at| at.to_string())
+                .collect(),
+        )
+    }
+
+    /// The choices of the drop-down list on a cell, as Excel shows them; an
+    /// empty array when the cell has no list rule.
+    #[wasm_bindgen(js_name = validationList)]
+    pub fn validation_list(&self, sheet: usize, address: &str) -> Result<Vec<String>, JsError> {
+        use crate::formula::validation::{list_items, rule_at};
+        let at = CellRef::parse(address).map_err(js)?;
+        self.sheet_of(sheet)?;
+        Ok(rule_at(&self.workbook, sheet, at)
+            .map(|rule| list_items(&self.workbook, sheet, rule))
+            .unwrap_or_default())
+    }
+
     /// Evaluates a formula (with or without the leading `=`) as if it sat in
     /// `address` of `sheet`, and returns its result.
     #[wasm_bindgen(unchecked_return_type = "CellValue")]

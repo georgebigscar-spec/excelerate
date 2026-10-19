@@ -24,14 +24,14 @@ formulas = ["dep:regex"]
 write = []
 
 [dependencies]
-# Already in the tree under `zip`: the cipher of a workbook encrypted with a
-# password to open (`reader::encryption`).
+# The cipher of a workbook encrypted with a password to open
+# (`reader::encryption`). Pure Rust.
 aes = "0.9"
-# Already in the tree under `zip`; naming it here is what lets the Gnumeric
-# reader gunzip its one XML part.
+# The Deflate of `zip`, named here so the Gnumeric reader can gunzip its one
+# XML part too.
 flate2 = "1.1.9"
-# Both already in the tree under `zip`: the password hash of a protected
-# sheet or workbook (SHA-512, SHA-1 for older files) and its random salt.
+# With `sha1` and `sha2`: the password hash of a protected sheet or workbook
+# (SHA-512, SHA-1 for older files) and its random salt.
 getrandom = "0.4"
 quick-xml = "0.42.0"
 # `REGEXTEST`, `REGEXEXTRACT`, `REGEXREPLACE`: a pattern engine is not twenty
@@ -46,7 +46,11 @@ regex = { version = "1", optional = true, default-features = false, features = [
 sha1 = "0.11"
 sha2 = "0.11"
 thiserror = "2.0.20"
-zip = "8.6.0"
+# Only Stored and Deflate: every package format read or written here uses
+# nothing else. The defaults add zstd, bzip2, lzma, ppmd, deflate64, zopfli
+# and zip's own encryption; zstd is C (`zstd-sys`), so a wasm build needed
+# clang. Deflate stays on zlib-rs, the backend the defaults chose.
+zip = { version = "8.6.0", default-features = false, features = ["deflate-flate2-zlib-rs"] }
 
 # The wasm bindings only; a native build never sees this.
 [target.'cfg(target_arch = "wasm32")'.dependencies]

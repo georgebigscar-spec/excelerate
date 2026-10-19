@@ -74,6 +74,23 @@ book.setRange(0, "F1", [["Jan", "Кв1", 1], [null, null, 3]]);
 book.fillSeries(0, "F1:H6", "down");   // Feb..Jun, Кв2..Кв6, 5, 7, 9, 11
 ```
 
+Clean up imported data, then ask what input reaches a target:
+
+```ts
+import { Book } from "@rosperitus/excelerate";
+
+const book = new Book();
+book.setRange(0, "A1", [["Ann;41"], ["Bob;37"], ["ann;41"]]);
+book.textToColumns(0, "A1:A3", { delimiters: ";" });   // Ann | 41 ...
+book.removeDuplicates(0, "A1:B3");                      // { removed: 1, remaining: 2 }
+
+book.setRange(0, "D1", [[0.01, "=PMT(D1,36,-10000)"]]);
+const { value } = book.goalSeek(0, "E1", 300, "D1");    // the monthly rate: 0.0042...
+
+book.addDataValidation(0, { sqref: "B1:B100", type: "whole", formula1: "18", formula2: "99" });
+book.checkValidation(0, "B5", 12);                      // { style: "stop", ... }
+```
+
 ## In the browser
 
 The package carries a second build for browsers and bundlers (Vite, webpack,
@@ -259,6 +276,14 @@ class Book {
   fillRight(sheet: number, range: string): void;
   fillSeries(sheet: number, range: string, direction: "down" | "right" | "up" | "left"): void;
 
+  // Data tools, as Excel's Remove Duplicates, Text to Columns and Data Validation
+  removeDuplicates(sheet: number, range: string, options?: RemoveDuplicatesOptions): DuplicatesRemoved;
+  textToColumns(sheet: number, range: string, options: TextToColumnsOptions): number;
+  addDataValidation(sheet: number, rule: NewDataValidation): void;
+  checkValidation(sheet: number, address: string, value: CellValue): ValidationProblem | null;
+  invalidCells(sheet: number): string[];                // Circle Invalid Data
+  validationList(sheet: number, address: string): string[];   // a drop-down's choices
+
   // What is on a sheet besides cells
   comments(sheet: number): SheetComment[];
   hyperlinks(sheet: number): SheetHyperlink[];
@@ -328,6 +353,7 @@ class Book {
   recalculateCell(sheet: number, address: string): boolean;
   recalculateFrom(sheet: number, address: string): number;
   recalculateFromMany(sheet: number, addresses: string[]): number;
+  goalSeek(sheet: number, set: string, target: number, changing: string, options?: GoalSeekOptions): GoalSeekResult;
 
   // Functions of your own, for names no built-in claims
   registerFunction(name: string, fn: (...args: (CellValue | CellGrid)[]) => CellValue | CellGrid): void;
