@@ -362,3 +362,428 @@ mod tests {
         assert_eq!(by.split("ab"), ["ab"].map(String::from));
     }
 }
+
+// ---------------------------------------------------------- advanced filter
+
+/// Where [`advanced_filter`] puts what passes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FilterOutput {
+    /// Hide the rows of the list that do not pass ("Filter the list,
+    /// in-place").
+    InPlace,
+    /// Copy the header and the rows that pass to here ("Copy to another
+    /// location").
+    CopyTo(usize, CellRef),
+}
+
+/// Whether `text` matches an Excel wildcard pattern, without regard to case:
+/// `*` any run, `?` one character, `~` before either stands for it.
+fn wildcard(pattern: &str, text: &str) -> bool {
+    let pattern: Vec<char> = pattern.to_lowercase().chars().collect();
+    let text: Vec<char> = text.to_lowercase().chars().collect();
+    wildcard_chars(&pattern, &text)
+}
+
+fn wildcard_chars(p: &[char], t: &[char]) -> bool {
+    match p.first() {
+        None => t.is_empty(),
+        Some('*') => (0..=t.len()).any(|i| wildcard_chars(&p[1..], &t[i..])),
+        Some('?') => !t.is_empty() && wildcard_chars(&p[1..], &t[1..]),
+        Some('~') if p.len() > 1 => t.first() == Some(&p[1]) && wildcard_chars(&p[2..], &t[1..]),
+        Some(c) => t.first() == Some(c) && wildcard_chars(&p[1..], &t[1..]),
+    }
+}
+
+/// Whether a cell passes one criteria cell, as Excel reads them: `>5`,
+/// `<>East`, `=` for an empty cell, `=East` for exactly East, and plain text
+/// for anything that begins with it; `*` and `?` work in text.
+fn passes(criterion: &str, shown: &str, number: Option<f64>) -> bool {
+    let criterion = criterion.trim();
+    if criterion.is_empty() {
+        return true;
+    }
+    let (op, operand) = ["<>", ">=", "<=", "=", ">", "<"]
+        .iter()
+        .find_map(|op| criterion.strip_prefix(op).map(|rest| (*op, rest)))
+        .unwrap_or(("", criterion));
+    let wanted = operand.trim().parse::<f64>().ok();
+    let order = match (number, wanted) {
+        (Some(n), Some(w)) => Some(n.total_cmp(&w)),
+        _ if op.starts_with(['<', '>']) && op != "<>" => {
+            // Text against text compares by letters; a number never passes
+            // a text bound or the other way round.
+            (number.is_none() && wanted.is_none() && !shown.is_empty())
+                .then(|| shown.to_lowercase().cmp(&operand.to_lowercase()))
+        }
+        _ => None,
+    };
+    let same = || match (number, wanted) {
+        (Some(n), Some(w)) => n.total_cmp(&w).is_eq(),
+        _ => wildcard(operand, shown),
+    };
+    match op {
+        "" => match (number, wanted) {
+            (Some(n), Some(w)) => n.total_cmp(&w).is_eq(),
+            // Plain text means "begins with".
+            _ => wildcard(&format!("{operand}*"), shown),
+        },
+        "=" if operand.is_empty() => shown.is_empty(),
+        "=" => same(),
+        "<>" if operand.is_empty() => !shown.is_empty(),
+        "<>" => !same(),
+        ">" => order.is_some_and(std::cmp::Ordering::is_gt),
+        "<" => order.is_some_and(std::cmp::Ordering::is_lt),
+        ">=" => order.is_some_and(std::cmp::Ordering::is_ge),
+        "<=" => order.is_some_and(std::cmp::Ordering::is_le),
+        _ => false,
+    }
+}
+
+/// Filters a list by a criteria range: Excel's Data - Advanced.
+///
+/// `list` is the list with its header row; `criteria` is a header row
+/// naming some of its columns (matched without regard to case) and one or
+/// more rows of conditions under it. Conditions in one row must all hold;
+/// a row passes if any criteria row holds for it. A criteria column whose
+/// header names no column of the list is an error. With `unique`, a row
+/// that shows the same as one above it is left out too ("Unique records
+/// only").
+///
+/// In place, the rows that fail are hidden and those that pass shown;
+/// copied, the header and the passing rows are written from the
+/// destination down, and the cells below in those columns cleared. Returns
+/// how many rows passed.
+///
+/// # Errors
+/// [`Error::SheetIndexOutOfRange`] for a missing sheet, and
+/// [`Error::InvalidRange`] for a criteria header the list lacks or a copy
+/// that would land inside the list.
+pub fn advanced_filter(
+    book: &mut Spreadsheet,
+    sheet: usize,
+    list: Range,
+    criteria: Range,
+    output: FilterOutput,
+    unique: bool,
+) -> Result<usize> {
+    let ws = book
+        .sheet(sheet)
+        .ok_or(Error::SheetIndexOutOfRange(sheet))?;
+    let header = list.start.row;
+    let last_row = ws.dimension().map_or_else(
+        || header.index(),
+        |used| list.end.row.index().min(used.end.row.index()),
+    );
+    let columns: Vec<Col> = (list.start.col.index()..=list.end.col.index())
+        .filter_map(Col::new)
+        .collect();
+    let shown = |c: Col, r: Row| book.formatted(sheet, CellRef::new(c, r));
+    let names: Vec<String> = columns
+        .iter()
+        .map(|&c| shown(c, header).to_lowercase())
+        .collect();
+    // Each criteria column: which list column it tests.
+    let mut tests: Vec<(Col, Col)> = Vec::new();
+    for index in criteria.start.col.index()..=criteria.end.col.index() {
+        let Some(col) = Col::new(index) else { continue };
+        let name = shown(col, criteria.start.row).to_lowercase();
+        if name.is_empty() {
+            continue;
+        }
+        let at = names
+            .iter()
+            .position(|n| *n == name)
+            .ok_or_else(|| Error::InvalidRange(format!("the list has no column {name:?}")))?;
+        tests.push((col, columns[at]));
+    }
+    let criteria_rows: Vec<Vec<(Col, String)>> = (criteria.start.row.index() + 1
+        ..=criteria.end.row.index())
+        .filter_map(Row::new)
+        .map(|r| tests.iter().map(|&(cc, lc)| (lc, shown(cc, r))).collect())
+        .collect();
+
+    let mut seen = HashSet::new();
+    let mut passed: Vec<Row> = Vec::new();
+    let mut failed: Vec<Row> = Vec::new();
+    for index in header.index() + 1..=last_row {
+        let Some(row) = Row::new(index) else { continue };
+        let ok = criteria_rows.is_empty()
+            || criteria_rows.iter().any(|conditions| {
+                conditions.iter().all(|(col, criterion)| {
+                    let at = CellRef::new(*col, row);
+                    let number = match ws.get(at).map(|c| c.value.result()) {
+                        Some(CellValue::Number(n)) => Some(*n),
+                        _ => None,
+                    };
+                    passes(criterion, &shown(*col, row), number)
+                })
+            });
+        let fresh = !unique || {
+            let key: Vec<String> = columns
+                .iter()
+                .map(|&c| shown(c, row).to_lowercase())
+                .collect();
+            !ok || seen.insert(key)
+        };
+        if ok && fresh {
+            passed.push(row);
+        } else {
+            failed.push(row);
+        }
+    }
+
+    match output {
+        FilterOutput::InPlace => {
+            let ws = book
+                .sheet_mut(sheet)
+                .ok_or(Error::SheetIndexOutOfRange(sheet))?;
+            for row in &passed {
+                if let Some(p) = ws.rows.get_mut(row) {
+                    p.hidden = false;
+                }
+            }
+            for row in failed {
+                ws.rows.entry(row).or_default().hidden = true;
+            }
+        }
+        FilterOutput::CopyTo(to_sheet, to) => {
+            copy_rows(book, sheet, list, &columns, header, &passed, (to_sheet, to))?;
+        }
+    }
+    Ok(passed.len())
+}
+
+/// Writes the header and the rows that passed an advanced filter from `to`
+/// down, clearing what lay below in those columns.
+fn copy_rows(
+    book: &mut Spreadsheet,
+    sheet: usize,
+    list: Range,
+    columns: &[Col],
+    header: Row,
+    passed: &[Row],
+    (to_sheet, to): (usize, CellRef),
+) -> Result<()> {
+    let ws = book
+        .sheet(sheet)
+        .ok_or(Error::SheetIndexOutOfRange(sheet))?;
+    let width = list.width();
+    let height = u32::try_from(passed.len())
+        .unwrap_or(u32::MAX)
+        .saturating_add(1);
+    let end = CellRef::new(
+        Col::new(to.col.index() + width - 1).ok_or(Error::WouldPushOffSheet)?,
+        Row::new(to.row.index() + height - 1).ok_or(Error::WouldPushOffSheet)?,
+    );
+    if to_sheet == sheet && Range::new(to, end).intersects(&list) {
+        return Err(Error::InvalidRange(
+            "the copy would land inside the list".into(),
+        ));
+    }
+    let source_rows: Vec<Row> = std::iter::once(header)
+        .chain(passed.iter().copied())
+        .collect();
+    let cells: Vec<Vec<Option<Cell>>> = source_rows
+        .iter()
+        .map(|&r| {
+            columns
+                .iter()
+                .map(|&c| {
+                    ws.get(CellRef::new(c, r)).map(|cell| Cell {
+                        value: cell.value.result().clone(),
+                        ..cell.clone()
+                    })
+                })
+                .collect()
+        })
+        .collect();
+    let target = book
+        .sheet_mut(to_sheet)
+        .ok_or(Error::SheetIndexOutOfRange(to_sheet))?;
+    let stale: Vec<CellRef> = target
+        .iter()
+        .map(|(at, _)| at)
+        .filter(|at| at.row >= to.row && at.col >= to.col && at.col <= end.col)
+        .collect();
+    for at in stale {
+        target.remove(at);
+    }
+    for (r, row) in (0u32..).zip(cells) {
+        for (c, cell) in (0u32..).zip(row) {
+            let (Some(cell), Some(col), Some(rr)) = (
+                cell,
+                Col::new(to.col.index() + c),
+                Row::new(to.row.index() + r),
+            ) else {
+                continue;
+            };
+            *target.entry(CellRef::new(col, rr)) = cell;
+        }
+    }
+    Ok(())
+}
+
+// -------------------------------------------------------------- consolidate
+
+/// One source of [`consolidate`]: a sheet and a range on it.
+pub type ConsolidateSource = (usize, Range);
+
+/// The summary of the numbers of one consolidated cell.
+fn aggregate(how: super::SubtotalFunction, numbers: &[f64], filled: usize) -> Option<f64> {
+    use super::SubtotalFunction as F;
+    #[allow(clippy::cast_precision_loss, reason = "counts of cells")]
+    let n = numbers.len() as f64;
+    let sum: f64 = numbers.iter().sum();
+    let mean = sum / n;
+    let squares = || numbers.iter().map(|x| (x - mean).powi(2)).sum::<f64>();
+    #[allow(clippy::cast_precision_loss, reason = "counts of cells")]
+    match how {
+        F::Count => (filled > 0).then_some(filled as f64),
+        _ if numbers.is_empty() => None,
+        F::Sum => Some(sum),
+        F::CountNumbers => Some(n),
+        F::Average => Some(mean),
+        F::Max => numbers.iter().copied().reduce(f64::max),
+        F::Min => numbers.iter().copied().reduce(f64::min),
+        F::Product => Some(numbers.iter().product()),
+        F::StdDev => (n > 1.0).then(|| (squares() / (n - 1.0)).sqrt()),
+        F::StdDevP => Some((squares() / n).sqrt()),
+        F::Var => (n > 1.0).then(|| squares() / (n - 1.0)),
+        F::VarP => Some(squares() / n),
+    }
+}
+
+/// Combines ranges into one table: Excel's Data - Consolidate, without links
+/// to the sources.
+///
+/// With `top_row` and `left_column`, cells are matched by their labels (the
+/// text of the range's first row and first column, without regard to case),
+/// so sources need not line up; the labels appear in the order they are
+/// first met. Without them, cells are matched by position and the result is
+/// as large as the largest source. Each result cell is `how` over the
+/// matching cells; one with no number is left empty (Count counts text too).
+/// The result is written as values from `destination`. Returns the range it
+/// covers.
+///
+/// # Errors
+/// [`Error::SheetIndexOutOfRange`] for a missing sheet, and
+/// [`Error::InvalidRange`] for no source.
+#[allow(
+    clippy::too_many_lines,
+    reason = "labels, matching and writing in one pass"
+)]
+pub fn consolidate(
+    book: &mut Spreadsheet,
+    sources: &[ConsolidateSource],
+    destination: (usize, CellRef),
+    how: super::SubtotalFunction,
+    top_row: bool,
+    left_column: bool,
+) -> Result<Range> {
+    if sources.is_empty() {
+        return Err(Error::InvalidRange("nothing to consolidate".into()));
+    }
+    let mut row_labels: Vec<String> = Vec::new();
+    let mut col_labels: Vec<String> = Vec::new();
+    let label_index = |labels: &mut Vec<String>, label: String| -> usize {
+        labels
+            .iter()
+            .position(|l| l.to_lowercase() == label.to_lowercase())
+            .unwrap_or_else(|| {
+                labels.push(label);
+                labels.len() - 1
+            })
+    };
+    // (row key, column key) -> numbers and a count of filled cells.
+    let mut cells: std::collections::HashMap<(usize, usize), (Vec<f64>, usize)> =
+        std::collections::HashMap::new();
+    let (mut rows, mut cols) = (0usize, 0usize);
+    for &(sheet, range) in sources {
+        let ws = book
+            .sheet(sheet)
+            .ok_or(Error::SheetIndexOutOfRange(sheet))?;
+        let used = ws.dimension();
+        let last_row = used.map_or_else(
+            || range.start.row.index(),
+            |u| range.end.row.index().min(u.end.row.index()),
+        );
+        let last_col = used.map_or_else(
+            || range.start.col.index(),
+            |u| range.end.col.index().min(u.end.col.index()),
+        );
+        let first_row = range.start.row.index() + u32::from(top_row);
+        let first_col = range.start.col.index() + u32::from(left_column);
+        let text = |c: u32, r: u32| match (Col::new(c), Row::new(r)) {
+            (Some(c), Some(r)) => book.formatted(sheet, CellRef::new(c, r)),
+            _ => String::new(),
+        };
+        for r in first_row..=last_row {
+            for c in first_col..=last_col {
+                let (Some(col), Some(row)) = (Col::new(c), Row::new(r)) else {
+                    continue;
+                };
+                let rk = if left_column {
+                    label_index(&mut row_labels, text(range.start.col.index(), r))
+                } else {
+                    (r - first_row) as usize
+                };
+                let ck = if top_row {
+                    label_index(&mut col_labels, text(c, range.start.row.index()))
+                } else {
+                    (c - first_col) as usize
+                };
+                rows = rows.max(rk + 1);
+                cols = cols.max(ck + 1);
+                let entry = cells.entry((rk, ck)).or_default();
+                match ws
+                    .get(CellRef::new(col, row))
+                    .map(|cell| cell.value.result())
+                {
+                    Some(CellValue::Number(n)) => {
+                        entry.0.push(*n);
+                        entry.1 += 1;
+                    }
+                    Some(v) if !v.is_empty() => entry.1 += 1,
+                    _ => {}
+                }
+            }
+        }
+    }
+    let (to_sheet, to) = destination;
+    let off_r = u32::from(top_row);
+    let off_c = u32::from(left_column);
+    let height = u32::try_from(rows).unwrap_or(u32::MAX) + off_r;
+    let width = u32::try_from(cols).unwrap_or(u32::MAX) + off_c;
+    let end = CellRef::new(
+        Col::new(to.col.index() + width.max(1) - 1).ok_or(Error::WouldPushOffSheet)?,
+        Row::new(to.row.index() + height.max(1) - 1).ok_or(Error::WouldPushOffSheet)?,
+    );
+    let target = book
+        .sheet_mut(to_sheet)
+        .ok_or(Error::SheetIndexOutOfRange(to_sheet))?;
+    let place = |dr: u32, dc: u32| {
+        CellRef::new(
+            Col::new(to.col.index() + dc).unwrap_or(to.col),
+            Row::new(to.row.index() + dr).unwrap_or(to.row),
+        )
+    };
+    for (i, label) in (0u32..).zip(&col_labels) {
+        target.set(place(0, off_c + i), label.as_str());
+    }
+    for (i, label) in (0u32..).zip(&row_labels) {
+        target.set(place(off_r + i, 0), label.as_str());
+    }
+    for ((rk, ck), (numbers, filled)) in &cells {
+        let (Ok(r), Ok(c)) = (u32::try_from(*rk), u32::try_from(*ck)) else {
+            continue;
+        };
+        let at = place(off_r + r, off_c + c);
+        match aggregate(how, numbers, *filled) {
+            Some(v) => target.set(at, v),
+            None => {
+                target.remove(at);
+            }
+        }
+    }
+    Ok(Range::new(to, end))
+}

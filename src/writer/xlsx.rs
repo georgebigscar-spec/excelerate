@@ -1108,6 +1108,51 @@ fn protection_xml(p: Protection) -> String {
     s
 }
 
+/// `<sheetFormatPr>`, or nothing when the sheet has no default sizes and no
+/// outline.
+fn sheet_format_xml(sheet: &crate::model::Worksheet) -> String {
+    // Excel draws the outline's level buttons from these two counts, not
+    // from the rows and columns themselves: without them a grouped sheet
+    // opens with no buttons to collapse it by.
+    let outline_rows = sheet
+        .rows
+        .values()
+        .map(|r| r.outline_level)
+        .max()
+        .unwrap_or(0);
+    let outline_cols = sheet
+        .columns
+        .iter()
+        .map(|c| c.outline_level)
+        .max()
+        .unwrap_or(0);
+    let mut s = String::new();
+    if sheet.default_column_width.is_some()
+        || sheet.default_row_height.is_some()
+        || outline_rows > 0
+        || outline_cols > 0
+    {
+        s.push_str("<sheetFormatPr");
+        if let Some(w) = sheet.default_column_width {
+            let _ = write!(s, r#" defaultColWidth="{}""#, trim_number(w));
+        }
+        // Required by the schema; 15 points is Excel's own for Calibri 11.
+        let _ = write!(
+            s,
+            r#" defaultRowHeight="{}""#,
+            trim_number(sheet.default_row_height.unwrap_or(15.0))
+        );
+        if outline_rows > 0 {
+            let _ = write!(s, r#" outlineLevelRow="{outline_rows}""#);
+        }
+        if outline_cols > 0 {
+            let _ = write!(s, r#" outlineLevelCol="{outline_cols}""#);
+        }
+        s.push_str("/>");
+    }
+    s
+}
+
 /// Renders a number without a trailing `.0`, which Excel dislikes on font sizes.
 fn trim_number(n: f64) -> String {
     if n.fract() == 0.0 {
@@ -1140,16 +1185,7 @@ fn worksheet(
 
     // `<sheetFormatPr>` and `<cols>` must precede `<sheetData>`; Excel rejects
     // a sheet whose elements are out of order.
-    if sheet.default_column_width.is_some() || sheet.default_row_height.is_some() {
-        s.push_str("<sheetFormatPr");
-        if let Some(w) = sheet.default_column_width {
-            let _ = write!(s, r#" defaultColWidth="{}""#, trim_number(w));
-        }
-        if let Some(h) = sheet.default_row_height {
-            let _ = write!(s, r#" defaultRowHeight="{}""#, trim_number(h));
-        }
-        s.push_str("/>");
-    }
+    s.push_str(&sheet_format_xml(sheet));
     if !sheet.columns.is_empty() {
         s.push_str("<cols>");
         for run in &sheet.columns {
@@ -1842,6 +1878,7 @@ fn guards_xml(sheet: &crate::model::Worksheet) -> String {
         }
         s.push_str("</protectedRanges>");
     }
+    s.push_str(&scenarios_xml(&sheet.scenarios));
     if let Some(filter) = &sheet.auto_filter {
         s.push_str(&auto_filter_xml(filter));
     }
@@ -1874,6 +1911,72 @@ fn sheet_protection_xml(protection: &crate::model::SheetProtection) -> String {
         }
     }
     s.push_str("/>");
+    s
+}
+
+/// Renders `<scenarios>`, which sits after `<protectedRanges>`.
+fn scenarios_xml(scenarios: &crate::model::scenario::Scenarios) -> String {
+    let mut s = String::new();
+    if scenarios.is_empty() {
+        return s;
+    }
+    s.push_str("<scenarios");
+    if let Some(n) = scenarios.current {
+        let _ = write!(s, r#" current="{n}""#);
+    }
+    if let Some(n) = scenarios.show {
+        let _ = write!(s, r#" show="{n}""#);
+    }
+    if !scenarios.result_cells.is_empty() {
+        let refs: Vec<String> = scenarios
+            .result_cells
+            .iter()
+            .map(ToString::to_string)
+            .collect();
+        let _ = write!(s, r#" sqref="{}""#, refs.join(" "));
+    }
+    s.push('>');
+    for scenario in &scenarios.list {
+        let _ = write!(
+            s,
+            r#"<scenario name="{}" count="{}""#,
+            escape(&scenario.name),
+            scenario.inputs.len()
+        );
+        if scenario.locked {
+            s.push_str(r#" locked="1""#);
+        }
+        if scenario.hidden {
+            s.push_str(r#" hidden="1""#);
+        }
+        if let Some(user) = &scenario.user {
+            let _ = write!(s, r#" user="{}""#, escape(user));
+        }
+        if let Some(comment) = &scenario.comment {
+            let _ = write!(s, r#" comment="{}""#, escape(comment));
+        }
+        s.push('>');
+        for input in &scenario.inputs {
+            let _ = write!(
+                s,
+                r#"<inputCells r="{}" val="{}""#,
+                input.cell,
+                escape(&input.value)
+            );
+            if input.deleted {
+                s.push_str(r#" deleted="1""#);
+            }
+            if input.undone {
+                s.push_str(r#" undone="1""#);
+            }
+            if let Some(id) = input.number_format_id {
+                let _ = write!(s, r#" numFmtId="{id}""#);
+            }
+            s.push_str("/>");
+        }
+        s.push_str("</scenario>");
+    }
+    s.push_str("</scenarios>");
     s
 }
 
@@ -2850,7 +2953,7 @@ mod tests {
     }
 
     /// The order `CT_Worksheet` fixes, as far as this writer emits it.
-    const WORKSHEET_ORDER: [&str; 23] = [
+    const WORKSHEET_ORDER: [&str; 24] = [
         "sheetPr",
         "dimension",
         "sheetViews",
@@ -2859,6 +2962,7 @@ mod tests {
         "sheetData",
         "sheetProtection",
         "protectedRanges",
+        "scenarios",
         "autoFilter",
         "sortState",
         "mergeCells",

@@ -12,6 +12,7 @@ pub mod image;
 pub mod pivot;
 pub mod properties;
 pub mod protection;
+pub mod scenario;
 pub mod shape;
 pub mod sparkline;
 pub mod table;
@@ -1622,6 +1623,8 @@ pub struct Worksheet {
     /// Ranges exempted from that protection, or holding a password of their
     /// own.
     pub protected_ranges: Vec<ProtectedRange>,
+    /// The Scenario Manager's scenarios. See [`scenario`].
+    pub scenarios: scenario::Scenarios,
     /// The filter over a range of the sheet, when it has one.
     pub auto_filter: Option<AutoFilter>,
     /// The last sort of a range made outside a filter (Data > Sort), when

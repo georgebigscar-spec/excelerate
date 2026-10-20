@@ -203,7 +203,7 @@ impl PivotTable {
         self.origin.as_ref().is_some_and(|o| {
             let mut read = (*o.read).clone();
             read.origin.clone_from(&self.origin);
-            read == *self
+            !o.relaid && read == *self
         })
     }
 }
@@ -217,6 +217,9 @@ pub struct PivotOrigin {
     pub(crate) part: String,
     /// The report as it was read.
     pub(crate) read: Box<PivotTable>,
+    /// Laid out again here (`edit::refresh_pivot`), so the cells no longer
+    /// match the layout the part describes: it must be written anew.
+    pub(crate) relaid: bool,
 }
 
 impl PivotOrigin {

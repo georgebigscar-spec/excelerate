@@ -1,12 +1,13 @@
-//! What-If Analysis: Goal Seek.
+//! What-If Analysis: Goal Seek, the Scenario Manager and data tables.
 //!
 //! The root finder was ported from the `data.goalSeek` command of gridcraft
 //! (<https://github.com/storytold/gridcraft>, MIT OR Apache-2.0).
 
-use crate::coordinate::CellRef;
+use crate::coordinate::{CellRef, Col, Range, Row};
 use crate::error::{Error, Result};
 use crate::formula::eval::{Engine, recalculate_from_with};
 use crate::formula::{Origin, Value};
+use crate::model::scenario::{Scenario, ScenarioInput};
 use crate::model::{CellValue, Spreadsheet};
 use crate::progress::Options;
 
@@ -276,6 +277,336 @@ fn seek(x0: f64, f: &mut dyn FnMut(f64) -> f64, max_iter: u32, tol: f64) -> Seek
         fb = fnext;
     }
     done(best, it)
+}
+
+// ---------------------------------------------------------------- scenarios
+
+/// The text a scenario keeps for a value: a number as its shortest digits.
+fn scenario_text(value: &CellValue) -> String {
+    match value.result() {
+        CellValue::Number(n) => n.to_string(),
+        CellValue::Bool(b) => if *b { "TRUE" } else { "FALSE" }.to_owned(),
+        other => other.display(
+            crate::style::format::GENERAL,
+            crate::shared::date::Epoch::default(),
+        ),
+    }
+}
+
+fn sheet_of(book: &Spreadsheet, sheet: usize) -> Result<&crate::model::Worksheet> {
+    book.sheet(sheet).ok_or(Error::SheetIndexOutOfRange(sheet))
+}
+
+/// Adds a scenario to a sheet with the values its input cells hold now, as
+/// the Scenario Manager's Add does; a scenario of the same name is
+/// replaced. Returns its index.
+///
+/// # Errors
+/// [`Error::SheetIndexOutOfRange`] for a missing sheet, and
+/// [`Error::GoalSeek`] for no input cell, more than Excel's 32, or one that
+/// holds a formula.
+pub fn add_scenario(
+    book: &mut Spreadsheet,
+    sheet: usize,
+    name: &str,
+    inputs: &[CellRef],
+) -> Result<usize> {
+    let ws = sheet_of(book, sheet)?;
+    if inputs.is_empty() || inputs.len() > 32 {
+        return Err(Error::GoalSeek("a scenario changes 1 to 32 cells".into()));
+    }
+    let mut cells = Vec::new();
+    for &cell in inputs {
+        let value = ws.get(cell).map(|c| c.value.clone()).unwrap_or_default();
+        if matches!(value, CellValue::Formula { .. }) {
+            return Err(Error::GoalSeek(format!(
+                "{cell} holds a formula; a scenario changes values"
+            )));
+        }
+        cells.push(ScenarioInput {
+            cell,
+            value: scenario_text(&value),
+            ..ScenarioInput::default()
+        });
+    }
+    let scenario = Scenario {
+        name: name.to_owned(),
+        inputs: cells,
+        ..Scenario::default()
+    };
+    let list = &mut book
+        .sheet_mut(sheet)
+        .ok_or(Error::SheetIndexOutOfRange(sheet))?
+        .scenarios
+        .list;
+    if let Some(at) = list.iter().position(|s| s.name.eq_ignore_ascii_case(name)) {
+        list[at] = scenario;
+        Ok(at)
+    } else {
+        list.push(scenario);
+        Ok(list.len() - 1)
+    }
+}
+
+/// Puts a scenario's values into its input cells and recomputes what reads
+/// them, as the Scenario Manager's Show does. Returns how many cells were
+/// set.
+///
+/// # Errors
+/// [`Error::SheetIndexOutOfRange`] for a missing sheet, and
+/// [`Error::GoalSeek`] for a scenario the sheet does not have.
+pub fn show_scenario(book: &mut Spreadsheet, sheet: usize, name: &str) -> Result<usize> {
+    let ws = sheet_of(book, sheet)?;
+    let (index, scenario) = ws
+        .scenarios
+        .list
+        .iter()
+        .enumerate()
+        .find(|(_, s)| s.name.eq_ignore_ascii_case(name))
+        .ok_or_else(|| Error::GoalSeek(format!("the sheet has no scenario {name:?}")))?;
+    let inputs: Vec<(CellRef, String)> = scenario
+        .inputs
+        .iter()
+        .filter(|i| !i.deleted)
+        .map(|i| (i.cell, i.value.clone()))
+        .collect();
+    let ws = book
+        .sheet_mut(sheet)
+        .ok_or(Error::SheetIndexOutOfRange(sheet))?;
+    for (cell, value) in &inputs {
+        ws.set(*cell, crate::reader::csv::value_of(value));
+    }
+    ws.scenarios.current = u32::try_from(index).ok();
+    let changed: Vec<(usize, CellRef)> = inputs.iter().map(|(c, _)| (sheet, *c)).collect();
+    recalculate_from_with(book, &changed, &Options::default());
+    Ok(inputs.len())
+}
+
+/// Writes the Scenario Manager's Summary report on a new sheet, "Scenario
+/// Summary" (numbered when taken): for each scenario, the values of its
+/// changing cells and what each of `results` computes with them, beside the
+/// current values. The sheet it summarises is left as it was. Returns the
+/// new sheet's index.
+///
+/// # Errors
+/// [`Error::SheetIndexOutOfRange`] for a missing sheet, and
+/// [`Error::GoalSeek`] when the sheet has no scenario.
+pub fn scenario_summary(
+    book: &mut Spreadsheet,
+    sheet: usize,
+    results: &[CellRef],
+) -> Result<usize> {
+    let ws = sheet_of(book, sheet)?;
+    if ws.scenarios.list.is_empty() {
+        return Err(Error::GoalSeek(
+            "the sheet has no scenario to summarise".into(),
+        ));
+    }
+    let scenarios = ws.scenarios.list.clone();
+    // Every changing cell any scenario has, in order of first appearance.
+    let mut changing: Vec<CellRef> = Vec::new();
+    for input in scenarios.iter().flat_map(|s| &s.inputs) {
+        if !changing.contains(&input.cell) {
+            changing.push(input.cell);
+        }
+    }
+    let read = |book: &Spreadsheet, cell: CellRef| {
+        book.sheet(sheet)
+            .and_then(|ws| ws.get(cell))
+            .map(|c| c.value.result().clone())
+            .unwrap_or_default()
+    };
+    // One column per state: the current values, then each scenario shown on
+    // a copy of the workbook.
+    let mut columns: Vec<(String, Vec<CellValue>)> = Vec::new();
+    let current: Vec<CellValue> = changing
+        .iter()
+        .chain(results)
+        .map(|&c| read(book, c))
+        .collect();
+    columns.push(("Current Values:".into(), current));
+    for scenario in &scenarios {
+        let mut copy = book.clone();
+        show_scenario(&mut copy, sheet, &scenario.name)?;
+        let values = changing
+            .iter()
+            .chain(results)
+            .map(|&c| read(&copy, c))
+            .collect();
+        columns.push((scenario.name.clone(), values));
+    }
+
+    let title = {
+        let taken = |t: &str| {
+            book.sheets()
+                .iter()
+                .any(|s| s.title().eq_ignore_ascii_case(t))
+        };
+        let mut title = "Scenario Summary".to_owned();
+        let mut n = 2;
+        while taken(&title) {
+            title = format!("Scenario Summary {n}");
+            n += 1;
+        }
+        title
+    };
+    let mut report = crate::model::Worksheet::new(title)?;
+    // Rows and columns counted from 1 here, as the report reads.
+    let mut put = |row: u32, col: u32, value: CellValue| {
+        if let (Some(r), Some(c)) = (Row::new(row - 1), Col::new(col - 1)) {
+            report.set(CellRef::new(c, r), value);
+        }
+    };
+    put(1, 1, CellValue::text("Scenario Summary"));
+    for (i, (name, _)) in (3u32..).zip(&columns) {
+        put(2, i, CellValue::text(name.as_str()));
+    }
+    put(3, 1, CellValue::text("Changing Cells:"));
+    let mut row = 4;
+    let mut lines: Vec<(u32, CellRef)> = Vec::new();
+    for &cell in &changing {
+        lines.push((row, cell));
+        row += 1;
+    }
+    if !results.is_empty() {
+        put(row, 1, CellValue::text("Result Cells:"));
+        row += 1;
+        for &cell in results {
+            lines.push((row, cell));
+            row += 1;
+        }
+    }
+    for (i, &(r, cell)) in lines.iter().enumerate() {
+        put(r, 2, CellValue::text(cell.to_string().as_str()));
+        for (c, (_, values)) in (3u32..).zip(&columns) {
+            put(r, c, values[i].clone());
+        }
+    }
+    put(
+        row + 1,
+        1,
+        CellValue::text("Notes: Current Values column represents values of changing cells at"),
+    );
+    put(
+        row + 2,
+        1,
+        CellValue::text("time Scenario Summary Report was created."),
+    );
+    book.add_sheet(report)
+}
+
+// --------------------------------------------------------------- data tables
+
+/// Fills a data table, as What-If Analysis - Data Table does, with values.
+///
+/// `area` is the whole table, its top row and left column included.
+/// - With only `column_input`: the inputs run down the left column and the
+///   formulas across the top row; each body cell is its column's formula
+///   with `column_input` set to its row's input.
+/// - With only `row_input`: the other way round.
+/// - With both: the formula is the corner cell, the row inputs across the
+///   top and the column inputs down the left.
+///
+/// Excel writes `{=TABLE(...)}` there, which recalculates; this crate does
+/// not model that formula, so the body gets the values it computes, and the
+/// table must be filled again when the model changes. The input cells keep
+/// their values. Returns how many cells were filled.
+///
+/// # Errors
+/// [`Error::SheetIndexOutOfRange`] for a missing sheet, and
+/// [`Error::GoalSeek`] when neither input is given, an input lies inside
+/// the table, the table is smaller than 2 by 2, or a cell that should hold a
+/// formula does not.
+pub fn data_table(
+    book: &mut Spreadsheet,
+    sheet: usize,
+    area: Range,
+    row_input: Option<CellRef>,
+    column_input: Option<CellRef>,
+) -> Result<usize> {
+    sheet_of(book, sheet)?;
+    if row_input.is_none() && column_input.is_none() {
+        return Err(Error::GoalSeek(
+            "a data table needs a row or a column input cell".into(),
+        ));
+    }
+    if area.width() < 2 || area.height() < 2 {
+        return Err(Error::GoalSeek(format!(
+            "{area} is too small for a data table"
+        )));
+    }
+    if [row_input, column_input]
+        .into_iter()
+        .flatten()
+        .any(|c| area.contains(c))
+    {
+        return Err(Error::GoalSeek(
+            "an input cell may not lie inside the table".into(),
+        ));
+    }
+    let at = |dr: u32, dc: u32| {
+        CellRef::new(
+            Col::new(area.start.col.index() + dc).unwrap_or(area.start.col),
+            Row::new(area.start.row.index() + dr).unwrap_or(area.start.row),
+        )
+    };
+    let value = |book: &Spreadsheet, cell: CellRef| {
+        book.sheet(sheet)
+            .and_then(|ws| ws.get(cell))
+            .map(|c| c.value.result().clone())
+            .unwrap_or_default()
+    };
+    let formula_at = |book: &Spreadsheet, cell: CellRef| -> Result<crate::formula::Expr> {
+        match book
+            .sheet(sheet)
+            .and_then(|ws| ws.get(cell))
+            .map(|c| &c.value)
+        {
+            Some(CellValue::Formula { formula, .. }) => crate::formula::parse(formula)
+                .map_err(|e| Error::InvalidFormula(format!("{cell}: {e}"))),
+            _ => Err(Error::GoalSeek(format!(
+                "{cell} must hold the formula the table computes"
+            ))),
+        }
+    };
+    let (rows, cols) = (area.height(), area.width());
+    // (body cell, formula cell, row input value, column input value)
+    let mut jobs: Vec<(CellRef, CellRef, Option<CellValue>, Option<CellValue>)> = Vec::new();
+    for r in 1..rows {
+        for c in 1..cols {
+            let formula_cell = match (row_input, column_input) {
+                (Some(_), Some(_)) => at(0, 0),
+                (None, Some(_)) => at(0, c),
+                _ => at(r, 0),
+            };
+            let row_value = row_input.map(|_| value(book, at(0, c)));
+            let col_value = column_input.map(|_| value(book, at(r, 0)));
+            jobs.push((at(r, c), formula_cell, row_value, col_value));
+        }
+    }
+    let mut work = book.clone();
+    let mut out = Vec::with_capacity(jobs.len());
+    for (body, formula_cell, row_value, col_value) in jobs {
+        let expr = formula_at(book, formula_cell)?;
+        if let Some(ws) = work.sheet_mut(sheet) {
+            if let (Some(cell), Some(v)) = (row_input, row_value) {
+                ws.set(cell, v);
+            }
+            if let (Some(cell), Some(v)) = (column_input, col_value) {
+                ws.set(cell, v);
+            }
+        }
+        let result = Engine::new(&work).eval_tree(Origin::new(sheet, formula_cell), &expr);
+        out.push((body, crate::formula::eval::stored(result.scalar())));
+    }
+    let count = out.len();
+    let ws = book
+        .sheet_mut(sheet)
+        .ok_or(Error::SheetIndexOutOfRange(sheet))?;
+    for (cell, value) in out {
+        ws.set(cell, value);
+    }
+    Ok(count)
 }
 
 #[cfg(test)]

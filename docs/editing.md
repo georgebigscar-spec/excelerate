@@ -306,6 +306,51 @@ span just covers one sheet fewer.
 Renaming all 38 sheets of a 19,826-formula workbook takes 360 ms; removing one
 takes 10 ms.
 
+## Grouping, subtotals and other Data tools
+
+Rows and columns group as Data - Group does, collapse and expand as the
+outline's buttons do, and `subtotal` builds a whole outline from a sorted
+list:
+
+```rust
+use excelerate::edit::{SubtotalFunction, Subtotals, collapse_rows, subtotal};
+use excelerate::{Col, Range, Row, at};
+# use excelerate::model::{Spreadsheet, Worksheet};
+# let mut book = Spreadsheet::empty();
+# let mut sheet = Worksheet::new("Sales")?;
+# sheet.set(at!("A1"), "Region");
+# sheet.set(at!("B1"), "Amount");
+# for (r, (region, amount)) in (2..).zip([("East", 10.0), ("East", 20.0), ("West", 5.0)]) {
+#     sheet.set_at(r, 1, region)?;
+#     sheet.set_at(r, 2, amount)?;
+# }
+# book.add_sheet(sheet)?;
+
+// "East Total" under rows 2-3, "West Total" under row 5, "Grand Total" last.
+let groups = subtotal(&mut book, 0, Range::parse("A1:B4")?, &Subtotals {
+    group_by: Col::from_letters("A")?,
+    function: SubtotalFunction::Sum,
+    columns: vec![Col::from_letters("B")?],
+})?;
+assert_eq!(groups, 2);
+
+// Row 4 is the summary of East's rows: the minus button over it.
+collapse_rows(&mut book, 0, Row::from_one_based(4)?)?;
+# Ok::<(), excelerate::Error>(())
+```
+
+`flash_fill` fills a column by example, as Ctrl+E does, from the columns to
+its left; `FlashFill::learn` does the same without a sheet.
+`advanced_filter` applies a criteria range as Data - Advanced reads it
+(conditions in a row all hold, rows are alternatives, `>5`, `<>x`, `=`,
+wildcards), and `consolidate` combines ranges by their labels or their
+positions.
+
+A pivot table written by a program, this crate included, holds no report in
+its cells until Excel opens it and rebuilds it. `refresh_pivot` lays the
+report out from the pivot's source, in Excel's tabular form, so an HTML or
+CSV export, or this crate's formulas, see the numbers too.
+
 ## What else moves
 
 Drawing anchors move without going through the model: `edit::anchor` rewrites
