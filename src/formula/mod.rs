@@ -9,10 +9,12 @@
 //! ```
 
 pub mod chart;
+pub mod conditional;
 pub mod custom;
 pub mod eval;
 pub mod functions;
 pub mod parser;
+pub mod solver;
 pub mod validation;
 pub mod value;
 pub mod what_if;

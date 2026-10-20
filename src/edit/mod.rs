@@ -12,11 +12,24 @@ mod chart;
 mod data;
 mod extension;
 mod filter;
+mod flash;
+mod outline;
+mod pivot;
 mod range;
 mod series;
 
-pub use data::{Deduplicated, SplitBy, remove_duplicates, text_to_columns};
+pub use data::{
+    ConsolidateSource, Deduplicated, FilterOutput, SplitBy, advanced_filter, consolidate,
+    remove_duplicates, text_to_columns,
+};
 pub use filter::filter_table;
+pub use flash::{FlashFill, flash_fill};
+pub use outline::{
+    MAX_OUTLINE_LEVEL, OutlineGroup, SubtotalFunction, Subtotals, collapse_columns, collapse_rows,
+    column_groups, expand_columns, expand_rows, group_columns, group_rows, row_groups,
+    show_outline_level, subtotal, ungroup_columns, ungroup_rows,
+};
+pub use pivot::{refresh_all_pivots, refresh_pivot};
 pub use range::{
     SortBy, SortKey, SortOptions, copy_range, fill, insert_cells, insert_cells_with, move_range,
     move_sheet, remove_cells, sort_range, sort_range_with, sort_table,

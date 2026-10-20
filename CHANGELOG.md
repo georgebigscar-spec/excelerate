@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+### Fixed
+
+- A sheet's scenarios (`<scenarios>`, What-If Analysis - Scenario Manager)
+  were dropped on read, so a workbook lost them on a round trip. They are now
+  `Worksheet::scenarios` (`model::scenario`) and written back in the
+  schema's place.
+- A grouped sheet was written without `outlineLevelRow` and
+  `outlineLevelCol` in `<sheetFormatPr>`, which Excel draws the outline's
+  level buttons from: it opened with nothing to collapse the groups by.
+
 ### Changed
 
 - `zip` is built with Deflate alone (`default-features = false`,
@@ -14,7 +24,8 @@
 
 ### Added
 
-- Data tools:
+- Data tools ported from [gridcraft](https://github.com/storytold/gridcraft)
+  (MIT OR Apache-2.0):
   - `edit::remove_duplicates`: Excel's Remove Duplicates. Rows of a range are
     compared by the text their cells show, without regard to case, on all
     columns or the ones given; the first is kept, the rest close up inside
@@ -40,6 +51,30 @@
   and result types. `addDataValidation` adds a rule from JS, which could
   only read them before; a type or operator it does not know is an error
   rather than a silent default.
+- More of Excel's Data tab, ported from gridcraft (MIT OR Apache-2.0):
+  - The outline: `edit::group_rows`, `ungroup_rows`, `group_columns`,
+    `ungroup_columns`, `collapse_rows`, `expand_rows` (and for columns),
+    `show_outline_level` for the level buttons, `row_groups` and
+    `column_groups`. `edit::subtotal` is Data - Subtotal: a `SUBTOTAL` row
+    under each group of a sorted list, a grand total, and the outline.
+  - `formula::conditional::ConditionalFormatting` applies a sheet's
+    conditional formatting: what each cell gets from the matching rules, by
+    priority with stop-if-true, and its colour scale, data bar and icon.
+    `write_html` now shows it.
+  - `edit::flash_fill` and `FlashFill::learn`: Flash Fill from examples, with
+    several source columns, cuts inside a word and a header stepped over.
+  - `edit::refresh_pivot` and `refresh_all_pivots` lay a pivot table's
+    report out in its cells from its source, in tabular form, for readers
+    without a pivot engine; the file still asks Excel to rebuild it.
+  - `formula::what_if::add_scenario`, `show_scenario`, `scenario_summary`,
+    and `data_table` for one- and two-input data tables (filled with
+    values: `TABLE()` is not modelled). `edit::advanced_filter` applies a
+    criteria range as Excel reads it, in place or copied, unique records
+    only if asked; `edit::consolidate` combines ranges by label or position.
+  - `formula::solver`: Solver with Simplex LP (branch and bound for int and
+    bin) and GRG Nonlinear. `save_model` and `saved_model` keep the model in
+    the hidden `solver_*` names Excel's add-in uses. The Evolutionary method
+    is not included.
 
 ## 0.15.0
 

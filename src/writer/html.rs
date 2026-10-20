@@ -11,6 +11,7 @@
 //! of a quarter-million cells.
 
 use crate::error::{Error, Result};
+use crate::formula::conditional::{CfLook, ConditionalFormatting, IconLook, lerp};
 use crate::formula::eval::{Engine, Origin};
 use crate::formula::value::Value as FormulaValue;
 use crate::model::{CellValue, Hyperlink, LinkTarget, Spreadsheet, TextRun, Worksheet};
@@ -194,6 +195,10 @@ fn table(
     }
     out.push_str("</colgroup>\n");
 
+    // Read once per sheet: a rule's block statistics serve all its cells.
+    let mut cf =
+        (!sheet.conditional_formats.is_empty()).then(|| ConditionalFormatting::new(book, index));
+
     for row in used.start.row.one_based()..=used.end.row.one_based() {
         let Ok(row) = Row::from_one_based(u64::from(row)) else {
             break;
@@ -210,7 +215,17 @@ fn table(
             if merge.is_some_and(|m| m.start != at) {
                 continue;
             }
-            cell(book, sheet, index, at, merge, engine, theme, out);
+            cell(
+                book,
+                sheet,
+                index,
+                at,
+                merge,
+                engine,
+                cf.as_mut(),
+                theme,
+                out,
+            );
         }
         out.push_str("</tr>\n");
     }
@@ -229,10 +244,12 @@ fn cell(
     at: CellRef,
     merge: Option<Range>,
     engine: &mut Engine<'_>,
+    cf: Option<&mut ConditionalFormatting<'_>>,
     theme: &[u32],
     out: &mut String,
 ) {
     let cell = sheet.get(at);
+    let look = cf.map(|cf| cf.look(at)).filter(|look| !look.is_empty());
     let style_id = cell.map(|c| c.style).unwrap_or_default();
     let _ = write!(
         out,
@@ -240,6 +257,7 @@ fn cell(
         at.col.one_based(),
         style_id.index()
     );
+    let mut inline = String::new();
     if let Some(merge) = merge {
         if merge.width() > 1 {
             let _ = write!(out, " colspan=\"{}\"", merge.width());
@@ -247,13 +265,22 @@ fn cell(
         if merge.height() > 1 {
             let _ = write!(out, " rowspan=\"{}\"", merge.height());
         }
-        let edges = merged_edges(book, sheet, style_id, merge, theme);
-        if !edges.is_empty() {
-            let _ = write!(out, " style=\"{edges}\"");
-        }
+        inline.push_str(&merged_edges(book, sheet, style_id, merge, theme));
+    }
+    if let Some(look) = &look {
+        inline.push_str(&conditional_css(look, theme));
+    }
+    if !inline.is_empty() {
+        let _ = write!(out, " style=\"{}\"", inline.trim_end());
     }
     let style = book.styles.get(style_id);
-    let code = style.map_or(GENERAL, |s| s.number_format.code());
+    let format_override = look
+        .as_ref()
+        .and_then(|l| l.style.number_format.as_ref())
+        .map(|f| f.code().to_owned());
+    let code = format_override
+        .as_deref()
+        .unwrap_or_else(|| style.map_or(GENERAL, |s| s.number_format.code()));
     if code != GENERAL {
         let _ = write!(out, " data-format=\"{}\"", attribute(code));
     }
@@ -261,7 +288,12 @@ fn cell(
         typed(value, out);
     }
     out.push('>');
+    if let Some(icon) = look.as_ref().and_then(|l| l.icon.as_ref()) {
+        out.push_str(&icon_html(icon));
+    }
+    let hidden = look.as_ref().is_some_and(CfLook::hides_value);
     let body = match cell.map(|c| &c.value) {
+        _ if hidden => String::new(),
         None | Some(CellValue::Empty) => String::new(),
         Some(CellValue::RichText(runs)) => rich_text(runs, theme),
         Some(value) => {
@@ -641,6 +673,74 @@ fn fill_css(fill: &Fill, theme: &[u32], out: &mut String) {
     if let Some(colour) = colour {
         let _ = write!(out, "background-color: {colour}; ");
     }
+}
+
+/// What conditional formatting lays over a cell, as inline CSS: the matching
+/// rules' fill and font, a colour scale's fill, a data bar as a gradient.
+fn conditional_css(look: &CfLook, theme: &[u32]) -> String {
+    let mut css = String::new();
+    let rgb = |v: u32| format!("#{v:06X}");
+    let fill = look
+        .style
+        .fill
+        .as_ref()
+        // A differential fill keeps its solid colour in the background slot.
+        .and_then(|f| f.background.as_ref().or(f.foreground.as_ref()))
+        .and_then(|c| css_color(c, theme));
+    if let Some(colour) = look.color_scale.map(rgb).or(fill) {
+        let _ = write!(css, "background-color: {colour}; ");
+    }
+    if let Some(font) = &look.style.font {
+        css.push_str(&run_css(font, theme));
+        if !css.ends_with(' ') {
+            css.push(' ');
+        }
+    }
+    if let Some(bar) = &look.data_bar {
+        let percent = trim((bar.length * 100.0).clamp(0.0, 100.0));
+        let _ = write!(
+            css,
+            "background-image: linear-gradient(to right, {0} 0, {0} {percent}%, transparent {percent}%); ",
+            rgb(bar.color)
+        );
+    }
+    css
+}
+
+/// An icon of an icon set, drawn with a character: an arrow for the arrow
+/// sets, a dot for the rest, coloured from red (lowest) to green (highest).
+fn icon_html(icon: &IconLook) -> String {
+    let count = icon
+        .set
+        .chars()
+        .next()
+        .and_then(|c| c.to_digit(10))
+        .unwrap_or(3)
+        .max(2) as usize;
+    let step = icon.index.min(count - 1);
+    let glyph = if icon.set.contains("Arrows") {
+        let arrows: &[&str] = match count {
+            3 => &["\u{2193}", "\u{2192}", "\u{2191}"],
+            4 => &["\u{2193}", "\u{2198}", "\u{2197}", "\u{2191}"],
+            _ => &["\u{2193}", "\u{2198}", "\u{2192}", "\u{2197}", "\u{2191}"],
+        };
+        arrows[step.min(arrows.len() - 1)]
+    } else {
+        "\u{25CF}"
+    };
+    #[allow(clippy::cast_precision_loss, reason = "five icons at most")]
+    let t = step as f64 / (count - 1) as f64;
+    // Red, then amber at the middle, then green.
+    let colour = if t <= 0.5 {
+        lerp(0xE0_45_45, 0xF2_C1_4E, t * 2.0)
+    } else {
+        lerp(0xF2_C1_4E, 0x3C_A0_5B, (t - 0.5) * 2.0)
+    };
+    format!(
+        "<span class=\"cf-icon\" data-set=\"{}\" data-icon=\"{}\" style=\"color: #{colour:06X}\">{glyph}</span> ",
+        attribute(&icon.set),
+        icon.index
+    )
 }
 
 /// A colour as CSS. A theme colour is resolved through the workbook's theme,

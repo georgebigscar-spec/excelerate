@@ -707,6 +707,7 @@ fn read_sheet_pivots<R: Read + Seek>(
             table.origin = Some(PivotOrigin {
                 part,
                 read: Box::new(table.clone()),
+                relaid: false,
             });
             Some(table)
         })
@@ -2469,6 +2470,37 @@ impl SheetReader<'_> {
             }
             "sheetProtection" => read_sheet_protection(&mut self.sheet.protection, e),
             "protectedRange" => self.sheet.protected_ranges.push(read_protected_range(e)),
+            "scenarios" => {
+                let scenarios = &mut self.sheet.scenarios;
+                scenarios.current = attr(e, "current").and_then(|v| v.parse().ok());
+                scenarios.show = attr(e, "show").and_then(|v| v.parse().ok());
+                scenarios.result_cells =
+                    attr(e, "sqref").map(|v| read_sqref(&v)).unwrap_or_default();
+            }
+            "scenario" => self
+                .sheet
+                .scenarios
+                .list
+                .push(crate::model::scenario::Scenario {
+                    name: attr(e, "name").unwrap_or_default(),
+                    locked: attr(e, "locked").is_some_and(|v| is_true(&v)),
+                    hidden: attr(e, "hidden").is_some_and(|v| is_true(&v)),
+                    user: attr(e, "user"),
+                    comment: attr(e, "comment"),
+                    inputs: Vec::new(),
+                }),
+            "inputCells" => {
+                let cell = attr(e, "r").and_then(|v| CellRef::parse(&v).ok());
+                if let (Some(cell), Some(scenario)) = (cell, self.sheet.scenarios.list.last_mut()) {
+                    scenario.inputs.push(crate::model::scenario::ScenarioInput {
+                        cell,
+                        value: attr(e, "val").unwrap_or_default(),
+                        deleted: attr(e, "deleted").is_some_and(|v| is_true(&v)),
+                        undone: attr(e, "undone").is_some_and(|v| is_true(&v)),
+                        number_format_id: attr(e, "numFmtId").and_then(|v| v.parse().ok()),
+                    });
+                }
+            }
             "mergeCell" => {
                 for attr in e.attributes().flatten() {
                     if attr.key.local_name().as_ref() == "ref"

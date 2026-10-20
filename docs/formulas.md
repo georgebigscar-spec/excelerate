@@ -264,3 +264,90 @@ assert_eq!(invalid_cells(&book, 0), vec![at!("A2")]);
 A rule's formulas are written for the first cell of its range and move with
 the cell checked, as in Excel, so `$B$1` is a fixed bound and `B1` the cell
 beside each one.
+
+## Conditional formatting, applied
+
+A sheet's `conditional_formats` are its rules as the file wrote them;
+`ConditionalFormatting` works out what they give each cell: the
+differential style of the rules that match, strongest first, and any colour
+scale, data bar or icon. `write_html` uses it, so the page shows what Excel
+shows.
+
+```rust
+use excelerate::at;
+use excelerate::formula::conditional::ConditionalFormatting;
+use excelerate::model::{CfRule, CfRuleType, ConditionalFormat, Spreadsheet, Worksheet};
+use excelerate::Range;
+
+let mut book = Spreadsheet::empty();
+let mut sheet = Worksheet::new("S")?;
+for (r, n) in (1..).zip([3.0, 8.0, 5.0]) {
+    sheet.set_at(r, 1, n)?;
+}
+sheet.conditional_formats.push(ConditionalFormat {
+    sqref: vec![Range::parse("A1:A3")?],
+    rules: vec![CfRule {
+        kind: CfRuleType::Expression,
+        formulas: vec!["A1>4".into()],
+        dxf: Some(0),
+        priority: 1,
+        ..CfRule::default()
+    }],
+});
+book.add_sheet(sheet)?;
+
+let mut cf = ConditionalFormatting::new(&book, 0);
+assert!(cf.look(at!("A1")).rules.is_empty());
+assert_eq!(cf.look(at!("A2")).rules, vec![0]);
+# Ok::<(), excelerate::Error>(())
+```
+
+## Scenarios and data tables
+
+`what_if::add_scenario` records the values of a sheet's input cells under a
+name, `show_scenario` puts them back and recomputes, and `scenario_summary`
+writes the Scenario Manager's summary report on a new sheet. Scenarios are
+kept in the file as Excel keeps them. `data_table` fills a one- or two-input
+data table with the values its formula takes for each input; Excel's live
+`{=TABLE()}` is not modelled, so fill it again after the model changes.
+
+## Solver
+
+`solver::solve` finds the values of variable cells that maximise, minimise
+or hit a value in an objective cell under constraints, with Simplex LP for
+linear models (integer and binary constraints included) or GRG Nonlinear
+for smooth ones. The answer is left in the cells.
+
+```rust
+use excelerate::at;
+use excelerate::formula::solver::{
+    Bound, Relation, SolverConstraint, SolverGoal, SolverMethod, SolverModel, solve,
+};
+use excelerate::model::{CellValue, Spreadsheet, Worksheet};
+use excelerate::Range;
+
+// Profit 3x + 5y with x <= 4, 2y <= 12 and 3x + 2y <= 18.
+let mut book = Spreadsheet::empty();
+let mut sheet = Worksheet::new("Plan")?;
+sheet.set(at!("C1"), CellValue::formula("3*A1+5*B1"));
+sheet.set(at!("A2"), CellValue::formula("2*B1"));
+sheet.set(at!("A3"), CellValue::formula("3*A1+2*B1"));
+book.add_sheet(sheet)?;
+
+let mut model = SolverModel::new(at!("C1"), SolverGoal::Max, vec![Range::parse("A1:B1")?]);
+model.method = SolverMethod::SimplexLp;
+for (cells, limit) in [("A1", 4.0), ("A2", 12.0), ("A3", 18.0)] {
+    model.constraints.push(SolverConstraint {
+        cells: Range::parse(cells)?,
+        relation: Relation::LessOrEqual,
+        bound: Bound::Value(limit),
+    });
+}
+let solved = solve(&mut book, 0, &model)?;
+assert!((solved.objective - 36.0).abs() < 1e-9);   // x = 2, y = 6
+# Ok::<(), excelerate::Error>(())
+```
+
+`save_model` keeps a model in the hidden `solver_*` names Excel's Solver
+add-in uses, and `saved_model` reads one back, so a model set up in Excel
+can be solved here and the other way round.
